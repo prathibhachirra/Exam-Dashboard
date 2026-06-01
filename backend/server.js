@@ -11,27 +11,45 @@ import examRoutes from "./Routes/examRoutes.js"
 import proctorRoutes from "./Routes/proctorRoutes.js"
 import submissionRoutes from "./Routes/submissionRoutes.js"
 
-
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173,http://127.0.0.1:5174")
+
+// 1. Parse your env URLs and establish fallback local origins
+const configuredOrigins = (process.env.CLIENT_URL || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5174",
+  ...configuredOrigins
+];
+
+// Helper function to validate origins against our list or Vercel domains
+const checkOrigin = (origin, callback) => {
+  // Allow server-to-server or REST tools (like Postman) which don't send an origin header
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+
+  // Check if it matches hardcoded list or comes from a Vercel preview/production link
+  const isAllowed = allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin);
+
+  if (isAllowed) {
+    callback(null, true);
+  } else {
+    callback(new Error("Not allowed by CORS"));
+  }
+};
+
 // middleware
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error("Not allowed by CORS"));
-    },
+    origin: checkOrigin,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -39,9 +57,10 @@ app.use(
 );
 app.use(express.json());
 
+// Apply identical dynamic rules to WebSockets
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: checkOrigin,
     credentials: true,
   },
 });
@@ -69,11 +88,10 @@ if (mongoUrl) {
 }
 
 // routes
-app.use("/auth-api",authRoutes);
-app.use("/exam-api",examRoutes);
-app.use("/proctor-api",proctorRoutes);
-app.use("/submission-api",submissionRoutes);
-
+app.use("/auth-api", authRoutes);
+app.use("/exam-api", examRoutes);
+app.use("/proctor-api", proctorRoutes);
+app.use("/submission-api", submissionRoutes);
 
 // default route
 app.get("/", (req, res) => {

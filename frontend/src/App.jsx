@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { io } from 'socket.io-client'
 import heroImage from './assets/hero.png'
@@ -863,6 +863,21 @@ function StudentDashboard({ logout, notify, user }) {
   )
 }
 
+const violationCopy = {
+  'tab-switch': {
+    title: 'Tab switching detected',
+    message: 'You moved away from the exam tab. Please stay on this test screen while answering.',
+  },
+  'focus-loss': {
+    title: 'Exam focus lost',
+    message: 'The exam window is no longer active. Keep the test window focused until submission.',
+  },
+  'webcam-violation': {
+    title: 'Webcam violation detected',
+    message: 'A webcam issue was recorded. Make sure your camera is visible and active during the exam.',
+  },
+}
+
 function AttemptExam({ logout, notify, token, user }) {
   const { examId } = useParams()
   const navigate = useNavigate()
@@ -870,6 +885,24 @@ function AttemptExam({ logout, notify, token, user }) {
   const [answers, setAnswers] = useState({})
   const [activeIndex, setActiveIndex] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  const [violationPopup, setViolationPopup] = useState(null)
+  const violationTimerRef = useRef(null)
+
+  const showViolationPopup = useCallback((type) => {
+    const copy = violationCopy[type] || {
+      title: 'Proctoring warning',
+      message: 'A proctoring rule violation was recorded for this attempt.',
+    }
+
+    window.clearTimeout(violationTimerRef.current)
+    setViolationPopup({ ...copy, type })
+    violationTimerRef.current = window.setTimeout(() => setViolationPopup(null), 6500)
+  }, [])
+
+  const closeViolationPopup = useCallback(() => {
+    window.clearTimeout(violationTimerRef.current)
+    setViolationPopup(null)
+  }, [])
 
   useEffect(() => {
     async function loadExam() {
@@ -885,6 +918,8 @@ function AttemptExam({ logout, notify, token, user }) {
     loadExam()
   }, [examId, navigate, notify])
 
+  useEffect(() => () => window.clearTimeout(violationTimerRef.current), [])
+
   useEffect(() => {
     if (!payload || !token) return undefined
 
@@ -892,6 +927,9 @@ function AttemptExam({ logout, notify, token, user }) {
     socket.emit('join-exam', { examId })
 
     async function recordFocusLoss() {
+      if (document.hidden) return
+
+      showViolationPopup('focus-loss')
       try {
         await proctorService.focusLoss({ examId, message: 'Exam window lost focus' })
         socket.emit('proctor-event', { examId, type: 'focus-loss', message: 'Exam window lost focus' })
@@ -903,6 +941,7 @@ function AttemptExam({ logout, notify, token, user }) {
 
     function onVisibilityChange() {
       if (document.hidden) {
+        showViolationPopup('tab-switch')
         proctorService.tabSwitch({ examId, message: 'Student switched tabs' }).catch((err) => notify(getApiError(err), 'error'))
         socket.emit('proctor-event', { examId, type: 'tab-switch', message: 'Student switched tabs' })
         notify('Tab switch recorded', 'warning')
@@ -917,7 +956,7 @@ function AttemptExam({ logout, notify, token, user }) {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       socket.disconnect()
     }
-  }, [examId, notify, payload, token])
+  }, [examId, notify, payload, showViolationPopup, token])
 
   if (!payload) return <PageLoader />
 
@@ -939,8 +978,16 @@ function AttemptExam({ logout, notify, token, user }) {
     }
   }
 
+  function recordWebcamViolation() {
+    showViolationPopup('webcam-violation')
+    proctorService.webcamViolation({ examId, message: 'Webcam suspicious activity' })
+      .then(() => notify('Webcam event recorded', 'warning'))
+      .catch((err) => notify(getApiError(err), 'error'))
+  }
+
   return (
     <AppLayout logout={logout} nav={<Link className="nav-link" to="/student">Back to dashboard</Link>} title={payload.exam.title} user={user}>
+      {violationPopup && <ViolationPopup warning={violationPopup} onClose={closeViolationPopup} />}
       <div className="student-grid">
         <section className="panel">
           <div className="exam-meta">
@@ -967,12 +1014,28 @@ function AttemptExam({ logout, notify, token, user }) {
             <div className="camera-lens" />
             <span className="camera-badge online">Proctoring active</span>
           </div>
-          <button className="danger-button" onClick={() => proctorService.webcamViolation({ examId, message: 'Webcam suspicious activity' }).then(() => notify('Webcam event recorded', 'warning')).catch((err) => notify(getApiError(err), 'error'))}>
+          <button className="danger-button" onClick={recordWebcamViolation}>
             Report webcam issue
           </button>
         </aside>
       </div>
     </AppLayout>
+  )
+}
+
+function ViolationPopup({ onClose, warning }) {
+  return (
+    <div className="violation-overlay" role="alertdialog" aria-modal="true" aria-labelledby="violation-title">
+      <div className="violation-popup">
+        <div className="violation-icon">!</div>
+        <div>
+          <span className="label">Proctoring warning</span>
+          <h2 id="violation-title">{warning.title}</h2>
+          <p>{warning.message}</p>
+        </div>
+        <button className="ghost-button" onClick={onClose}>I understand</button>
+      </div>
+    </div>
   )
 }
 
